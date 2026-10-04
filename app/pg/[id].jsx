@@ -103,23 +103,34 @@ export default function PGDetails() {
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 120 }}>
         {/* Gallery */}
         <View>
-          <ScrollView
-            horizontal
-            pagingEnabled
-            showsHorizontalScrollIndicator={false}
-            onMomentumScrollEnd={(e) => setGIndex(Math.round(e.nativeEvent.contentOffset.x / SCREEN_W))}
-          >
-            {pg.images.map((uri, i) => (
-              <Image key={i} source={{ uri }} style={{ width: SCREEN_W, height: GALLERY_H, backgroundColor: colors.surfaceSunken }} resizeMode="cover" />
-            ))}
-          </ScrollView>
+          {pg.images?.length ? (
+            <ScrollView
+              horizontal
+              pagingEnabled
+              showsHorizontalScrollIndicator={false}
+              onMomentumScrollEnd={(e) => setGIndex(Math.round(e.nativeEvent.contentOffset.x / SCREEN_W))}
+            >
+              {pg.images.map((uri, i) => (
+                <Image key={i} source={{ uri }} style={{ width: SCREEN_W, height: GALLERY_H, backgroundColor: colors.surfaceSunken }} resizeMode="cover" />
+              ))}
+            </ScrollView>
+          ) : (
+            // No photos yet — keep the gallery's height so the floating controls don't
+            // collapse onto the title/badges below.
+            <View style={{ width: SCREEN_W, height: GALLERY_H, backgroundColor: colors.surfaceSunken, alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+              <Icon name="image-off-outline" size={40} color={colors.inkFaint} />
+              <Text style={{ fontSize: typography.caption, fontWeight: typography.bold, color: colors.inkFaint }}>No photos yet</Text>
+            </View>
+          )}
 
           {/* dots */}
-          <View style={{ position: 'absolute', bottom: spacing.md, alignSelf: 'center', flexDirection: 'row', gap: 6 }}>
-            {pg.images.map((_, i) => (
-              <View key={i} style={{ width: i === gIndex ? 20 : 7, height: 7, borderRadius: 4, backgroundColor: i === gIndex ? colors.ink : colors.surface, borderWidth: 1, borderColor: colors.border }} />
-            ))}
-          </View>
+          {pg.images?.length > 1 ? (
+            <View style={{ position: 'absolute', bottom: spacing.md, alignSelf: 'center', flexDirection: 'row', gap: 6 }}>
+              {pg.images.map((_, i) => (
+                <View key={i} style={{ width: i === gIndex ? 20 : 7, height: 7, borderRadius: 4, backgroundColor: i === gIndex ? colors.ink : colors.surface, borderWidth: 1, borderColor: colors.border }} />
+              ))}
+            </View>
+          ) : null}
 
           {/* top controls */}
           <View style={{ position: 'absolute', top: insets.top + spacing.xs, left: spacing.lg, right: spacing.lg, flexDirection: 'row', justifyContent: 'space-between' }}>
@@ -240,18 +251,34 @@ export default function PGDetails() {
           </View>
         </Section>
 
-        {/* Rules */}
-        <Section title="Property rules">
-          <RuleRow icon="login" label="Check-in" value={pg.rules.checkIn} />
-          <Divider style={{ marginVertical: 0 }} />
-          <RuleRow icon="logout" label="Check-out" value={pg.rules.checkOut} />
-          <Divider style={{ marginVertical: 0 }} />
-          <RuleRow icon="account-group" label="Visitors" value={pg.rules.visitors} />
-          <Divider style={{ marginVertical: 0 }} />
-          <RuleRow icon="smoking-off" label="Smoking" value={pg.rules.smoking} />
-          <Divider style={{ marginVertical: 0 }} />
-          <RuleRow icon="calendar-clock" label="Notice period" value={pg.rules.noticePeriod} />
-        </Section>
+        {/* Rules — structured keys when available, else the backend's free-text list. */}
+        {(() => {
+          const fixed = [
+            { icon: 'login', label: 'Check-in', value: pg.rules?.checkIn },
+            { icon: 'logout', label: 'Check-out', value: pg.rules?.checkOut },
+            { icon: 'account-group', label: 'Visitors', value: pg.rules?.visitors },
+            { icon: 'smoking-off', label: 'Smoking', value: pg.rules?.smoking },
+            { icon: 'calendar-clock', label: 'Notice period', value: pg.rules?.noticePeriod },
+          ].filter((r) => r.value);
+          const list = pg.rules?.list || [];
+          if (!fixed.length && !list.length) return null;
+          return (
+            <Section title="Property rules">
+              {fixed.map((r, i) => (
+                <View key={r.label}>
+                  {i ? <Divider style={{ marginVertical: 0 }} /> : null}
+                  <RuleRow icon={r.icon} label={r.label} value={r.value} />
+                </View>
+              ))}
+              {list.map((rule, i) => (
+                <View key={`list_${i}`}>
+                  {fixed.length || i ? <Divider style={{ marginVertical: 0 }} /> : null}
+                  <RuleRow icon="check-circle-outline" label={rule} value="" />
+                </View>
+              ))}
+            </Section>
+          );
+        })()}
 
         {/* Map placeholder */}
         <Section title="Location">
@@ -259,7 +286,9 @@ export default function PGDetails() {
             <View style={{ height: 150, backgroundColor: colors.mintBg, alignItems: 'center', justifyContent: 'center', gap: 6 }}>
               <Icon name="map-marker-radius" size={40} color={colors.ink} />
               <Text style={{ fontSize: typography.caption, fontWeight: typography.bold, color: colors.ink }}>
-                {pg.address.latitude.toFixed(3)}, {pg.address.longitude.toFixed(3)}
+                {pg.address.latitude != null && pg.address.longitude != null
+                  ? `${pg.address.latitude.toFixed(3)}, ${pg.address.longitude.toFixed(3)}`
+                  : [pg.address.locality, pg.address.city].filter(Boolean).join(', ')}
               </Text>
               <Text style={{ fontSize: typography.micro, fontWeight: typography.semibold, color: colors.inkSoft }}>Interactive map coming soon</Text>
             </View>

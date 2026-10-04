@@ -1,119 +1,73 @@
 /**
- * PG catalog service. Mirrors the future REST contract:
- *   GET /pgs, GET /pgs/:id, GET /pgs (with ?q=), GET /pgs (with filters)
+ * PG catalog service — public search & detail (API_CONTRACT.md §PUBLIC & USER FLOWS).
+ *   GET /search      -> list cards
+ *   GET /pg/{id}     -> full detail (floors/rooms/beds + reviews)
  *
- * Screens/hooks depend ONLY on these functions, never on the mock records.
+ * Screens/hooks depend only on these function signatures and the mapped shapes, so the
+ * swap from mock to REST is contained here + mappers.js.
  */
 
-import { MOCK_PGS } from './mock/pgs';
-import { request } from './api';
-import { peekSellerProperties } from './seller.service';
-import { getMinRent, getAvailableBeds } from '@/utils';
+import { http, endpoints } from './api';
+import { mapPgCard, mapPgDetail, genderToPgType, roomTypeToApi, amenitiesToApi } from './mappers';
 
+/** All PGs (home feed). Backend has no "list all" beyond search with no filters. */
 export async function getPGs() {
-  return request(MOCK_PGS);
+  const list = await http.get(endpoints.search, { auth: false });
+  return (list || []).map(mapPgCard);
 }
 
 export async function getPGById(id) {
-  // Catalog first, then fall back to owner-created listings (for seller preview).
-  const pg = MOCK_PGS.find((p) => p.id === id) || peekSellerProperties().find((p) => p.id === id);
-  if (!pg) {
-    const err = new Error('Property not found');
-    err.code = 'NOT_FOUND';
-    throw err;
-  }
-  return request(pg);
+  const data = await http.get(endpoints.publicPg(id), { auth: false });
+  return mapPgDetail(data);
 }
 
+/** Favourites screen resolves a set of ids — fetch each public detail in parallel. */
 export async function getPGsByIds(ids = []) {
-  const set = new Set(ids);
-  return request(MOCK_PGS.filter((p) => set.has(p.id)));
+  if (!ids.length) return [];
+  const results = await Promise.allSettled(ids.map((id) => getPGById(id)));
+  return results.filter((r) => r.status === 'fulfilled').map((r) => r.value);
 }
 
+/** Free-text search via the backend `q` param (v1.1): matches name/area/city. */
 export async function searchPGs(query = '') {
-  const q = query.trim().toLowerCase();
-  if (!q) return request(MOCK_PGS);
-  const matches = MOCK_PGS.filter((p) => {
-    const hay = [
-      p.name,
-      p.address.locality,
-      p.address.city,
-      p.address.state,
-      p.propertyType,
-    ]
-      .join(' ')
-      .toLowerCase();
-    return hay.includes(q);
-  });
-  return request(matches, { latency: 250 });
+  const q = query.trim();
+  const list = await http.get(endpoints.search, { auth: false, query: q ? { q } : undefined });
+  return (list || []).map(mapPgCard);
 }
 
 /**
- * Apply a PGFilters-shaped object client-side. Returns filtered + sorted list.
- * Sorting: available first, then rating desc — a sensible marketplace default.
+ * Structured filter -> GET /search query params. v1.1 adds free-text `q`, repeatable
+ * `room_type`, and repeatable `property_type`, so filtering is fully server-side now.
  */
 export async function filterPGs(filters = {}) {
-  let list = MOCK_PGS.slice();
-
-  if (filters.location) {
-    const loc = filters.location.toLowerCase();
-    list = list.filter(
-      (p) =>
-        p.address.locality.toLowerCase().includes(loc) ||
-        p.address.city.toLowerCase().includes(loc)
-    );
+  const query = {};
+  if (filters.query) query.q = filters.query;
+  if (filters.location) query.city = filters.location;
+  if (filters.area) query.area = filters.area;
+  if (filters.gender) query.pg_type = genderToPgType(filters.gender);
+  if (filters.roomTypes?.length) query.room_type = filters.roomTypes.map(roomTypeToApi);
+  if (filters.propertyTypes?.length) query.property_type = filters.propertyTypes;
+  if (filters.minRent != null) query.min_rent = filters.minRent;
+  if (filters.maxRent != null) query.max_rent = filters.maxRent;
+  if (filters.availableOnly) query.available_only = true;
+  if (filters.amenities?.length || filters.foodIncluded) {
+    const keys = [...(filters.amenities || [])];
+    if (filters.foodIncluded && !keys.includes('food')) keys.push('food');
+    query.amenities = amenitiesToApi(keys);
+    if (keys.includes('ac')) query.is_ac = true;
   }
 
-  if (filters.query) {
-    const q = filters.query.toLowerCase();
-    list = list.filter((p) =>
-      [p.name, p.address.locality, p.address.city].join(' ').toLowerCase().includes(q)
-    );
-  }
-
-  if (filters.gender) {
-    list = list.filter((p) => p.gender === filters.gender);
-  }
-
-  if (filters.propertyTypes?.length) {
-    list = list.filter((p) => filters.propertyTypes.includes(p.propertyType));
-  }
-
-  if (filters.roomTypes?.length) {
-    list = list.filter((p) => p.rooms.some((r) => filters.roomTypes.includes(r.roomType)));
-  }
-
-  if (filters.amenities?.length) {
-    list = list.filter((p) => filters.amenities.every((a) => p.amenities.includes(a)));
-  }
-
-  if (filters.foodIncluded) {
-    list = list.filter((p) => p.amenities.includes('food'));
-  }
-
-  if (filters.minRent != null) {
-    list = list.filter((p) => getMinRent(p) >= filters.minRent);
-  }
-
-  if (filters.maxRent != null) {
-    list = list.filter((p) => getMinRent(p) <= filters.maxRent);
-  }
-
-  if (filters.availableOnly) {
-    list = list.filter((p) => getAvailableBeds(p) > 0);
-  }
+  const list = (await http.get(endpoints.search, { auth: false, query })).map(mapPgCard);
 
   list.sort((a, b) => {
-    const aAvail = getAvailableBeds(a) > 0 ? 1 : 0;
-    const bAvail = getAvailableBeds(b) > 0 ? 1 : 0;
-    if (aAvail !== bAvail) return bAvail - aAvail;
-    return b.rating - a.rating;
+    const avail = (p) => (p.rooms.some((r) => r.availableBeds > 0) ? 1 : 0);
+    const d = avail(b) - avail(a);
+    return d !== 0 ? d : b.rating - a.rating;
   });
-
-  return request(list, { latency: 350 });
+  return list;
 }
 
-/** Count how many filter dimensions are active — drives the "N" badge in the UI. */
+/** Count active filter dimensions — drives the "N" badge. Pure, unchanged. */
 export function countActiveFilters(filters = {}) {
   let n = 0;
   if (filters.gender) n += 1;

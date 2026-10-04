@@ -15,15 +15,23 @@ export default function Splash() {
   const router = useRouter();
   const status = useAuthStore((s) => s.status);
   const role = useAuthStore((s) => s.role);
+  const hydrated = useAuthStore((s) => s.hydrated);
+  const hydrate = useAuthStore((s) => s.hydrate);
+
+  // Restore any persisted session before deciding where to route.
+  useEffect(() => {
+    hydrate();
+  }, [hydrate]);
 
   useEffect(() => {
+    if (!hydrated) return; // wait until storage has been read
     const t = setTimeout(() => {
       if (status === 'authenticated' && role === 'seller') router.replace('/(seller)/dashboard');
       else if (status === 'authenticated') router.replace('/(consumer)/home');
       else router.replace('/(auth)/role-selection');
-    }, 1100);
+    }, 700);
     return () => clearTimeout(t);
-  }, [status, role, router]);
+  }, [hydrated, status, role, router]);
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center', gap: 20 }}>

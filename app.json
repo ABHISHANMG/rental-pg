@@ -51,7 +51,8 @@
           "photosPermission": "Allow Zaptel to access your photos so you can add them to your PG listing.",
           "cameraPermission": "Allow Zaptel to use your camera so you can photograph your PG."
         }
-      ]
+      ],
+      "expo-secure-store"
     ],
     "experiments": {
       "typedRoutes": false

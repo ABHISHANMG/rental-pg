@@ -9,7 +9,7 @@ import { KeyboardAvoidingView, Platform, ScrollView, Text, View } from 'react-na
 import { useRouter } from 'expo-router';
 import { Screen, Header, Input, Button, Surface, Icon } from '@/components';
 import { useAuthStore } from '@/store/auth.store';
-import { login as loginService, verifyOtp } from '@/services/auth.service';
+import { sendOtp as sendOtpService, verifyOtp } from '@/services/auth.service';
 import { colors, radius as R, spacing, typography } from '@/theme';
 
 export default function Login() {
@@ -21,39 +21,64 @@ export default function Login() {
   const [phone, setPhone] = useState('');
   const [otp, setOtp] = useState('');
   const [otpSent, setOtpSent] = useState(false);
+  const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [devOtp, setDevOtp] = useState(null);
 
   const isConsumer = role === 'consumer';
 
-  const sendOtp = () => {
+  const sendOtp = async () => {
     if (phone.replace(/\D/g, '').length !== 10) {
       setError('Enter a valid 10-digit mobile number');
       return;
     }
     setError('');
-    setOtpSent(true);
+    setSending(true);
+    try {
+      const res = await sendOtpService({ phone, role });
+      setDevOtp(res?.dev_otp || null); // present only when backend runs in OTP_DEV_MODE
+      setOtpSent(true);
+    } catch (e) {
+      setError(e.detail || e.message || 'Could not send OTP. Try again.');
+    } finally {
+      setSending(false);
+    }
   };
 
   const finish = (session) => {
     setSession(session);
-    router.replace(role === 'seller' ? '/(seller)/dashboard' : '/(consumer)/home');
+    // Route by the role the backend actually granted (a phone's role is fixed at first
+    // signup), not the one picked on the role screen.
+    const granted = session.user?.role || role;
+    router.replace(granted === 'seller' ? '/(seller)/dashboard' : '/(consumer)/home');
   };
 
   const verifyAndContinue = async () => {
     if (otp.replace(/\D/g, '').length < 4) {
-      setError('Enter the 4-digit code');
+      setError('Enter the code sent to your phone');
       return;
     }
     setError('');
     setLoading(true);
-    setAuthenticating();
     try {
-      await verifyOtp({ phone, otp });
-      const session = await loginService({ phone: `+91 ${phone}`, role });
+      const session = await verifyOtp({ phone, otp });
+      const granted = session.user?.role;
+      // This number may already be registered under the other role — role is immutable,
+      // so block the mismatch instead of dropping them into an experience their token
+      // can't use (owner APIs would 403).
+      if (granted && granted !== role) {
+        setError(
+          granted === 'consumer'
+            ? 'This number is registered as a PG hunter. To list a PG, use a different number.'
+            : 'This number is registered as a PG owner. Go back and choose “List my PG”.'
+        );
+        return;
+      }
+      setAuthenticating();
       finish(session);
     } catch (e) {
-      setError(e.message || 'Could not sign you in. Try again.');
+      setError(e.detail || e.message || 'Could not sign you in. Try again.');
     } finally {
       setLoading(false);
     }
@@ -117,13 +142,13 @@ export default function Login() {
                   maxLength={6}
                   onChangeText={(t) => setOtp(t.replace(/\D/g, ''))}
                   error={error}
-                  helper="Use any 4-digit code — this is a demo."
+                  helper={devOtp ? `Dev OTP: ${devOtp}` : 'Enter the code sent to your number.'}
                 />
                 <Button title="Verify & continue" icon="check" iconRight loading={loading} onPress={verifyAndContinue} fullWidth />
-                <Button title="Change number" variant="ghost" size="sm" onPress={() => { setOtpSent(false); setOtp(''); setError(''); }} />
+                <Button title="Change number" variant="ghost" size="sm" onPress={() => { setOtpSent(false); setOtp(''); setError(''); setDevOtp(null); }} />
               </View>
             ) : (
-              <Button title="Send OTP" icon="arrow-right" iconRight onPress={sendOtp} fullWidth />
+              <Button title="Send OTP" icon="arrow-right" iconRight loading={sending} onPress={sendOtp} fullWidth />
             )}
           </View>
 

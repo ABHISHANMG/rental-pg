@@ -13,6 +13,7 @@ import { useRouter } from 'expo-router';
 import { Screen, Header, Input, Button, Chip, Surface, Avatar } from '@/components';
 import { useDialog } from '@/hooks/useDialog';
 import { useAuthStore } from '@/store/auth.store';
+import { updateMe, logout as logoutService } from '@/services/auth.service';
 import { CITIES } from '@/constants';
 import { colors, spacing, typography } from '@/theme';
 
@@ -38,7 +39,22 @@ export default function PersonalInfo() {
   const dialog = useDialog();
   const user = useAuthStore((s) => s.user);
   const updateUser = useAuthStore((s) => s.updateUser);
+  const logoutStore = useAuthStore((s) => s.logout);
   const isSeller = useAuthStore((s) => s.role) === 'seller';
+
+  const confirmLogout = () =>
+    dialog.confirm({
+      title: 'Log out?',
+      message: 'You will need to sign in again with your mobile number.',
+      icon: 'logout',
+      tone: 'danger',
+      confirmLabel: 'Log out',
+      onConfirm: async () => {
+        await logoutService();
+        logoutStore();
+        router.replace('/(auth)/role-selection');
+      },
+    });
 
   const [form, setForm] = useState({
     name: user?.name || '',
@@ -57,21 +73,34 @@ export default function PersonalInfo() {
     since: user?.since || '',
   });
 
+  const [saving, setSaving] = useState(false);
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
-  const save = () => {
+  const save = async () => {
     if (form.name.trim().length < 2) return dialog.alert({ title: 'Name required', message: 'Please enter your name.', icon: 'account-alert' });
     if (form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) return dialog.alert({ title: 'Invalid email', message: 'Please enter a valid email address.', icon: 'email-alert' });
 
-    updateUser({
+    const patch = {
       name: form.name.trim(),
-      phone: form.phone.trim(),
+      phone: form.phone.trim(), // local only — the backend keys identity off the OTP phone
       email: form.email.trim(),
       ...(isSeller
         ? { businessName: form.businessName.trim(), gst: form.gst.trim(), pan: form.pan.trim(), businessAddress: form.businessAddress.trim(), since: form.since.trim() }
         : { gender: form.gender, occupation: form.occupation.trim(), city: form.city, emergencyContact: form.emergencyContact.trim() }),
-    });
-    dialog.alert({ title: 'Saved', message: 'Your details have been updated.', icon: 'check-bold', tone: 'success', onConfirm: () => router.back() });
+    };
+
+    updateUser(patch); // instant local update
+    setSaving(true);
+    try {
+      // Persist name/email + role-specific profile via PATCH /auth/me (v1.1).
+      const saved = await updateMe(patch);
+      if (saved) updateUser(saved);
+      dialog.alert({ title: 'Saved', message: 'Your details have been updated.', icon: 'check-bold', tone: 'success', onConfirm: () => router.back() });
+    } catch (e) {
+      dialog.alert({ title: 'Saved locally', message: e?.detail || 'Could not sync to the server, but your changes are saved on this device.', icon: 'cloud-off-outline' });
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -122,7 +151,8 @@ export default function PersonalInfo() {
             </Group>
           )}
 
-          <Button title="Save changes" icon="check" iconRight variant="primary" onPress={save} fullWidth />
+          <Button title="Save changes" icon="check" iconRight variant="primary" loading={saving} onPress={save} fullWidth />
+          <Button title="Log out" icon="logout" variant="surface" onPress={confirmLogout} fullWidth />
         </ScrollView>
       </KeyboardAvoidingView>
       {dialog.node}

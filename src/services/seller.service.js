@@ -1,188 +1,149 @@
 /**
- * Seller service (mock, in-memory). Mirrors the future REST contract for the owner
- * side: GET /pgs?owner, POST /pgs, PATCH /pgs/:id, PATCH /rooms/:id, GET /leads,
- * GET /bookings?owner, PATCH /bookings/:id/status.
- *
- * The demo seller "owns" a curated subset of the catalog so dashboards have real
- * numbers. All mutations happen on module-level copies, exactly like a cache that a
- * real API would later back.
+ * Seller (PG_OWNER) service — fully backed by the real API (base contract + v1.1).
+ *   GET   /pgs                        my PGs
+ *   GET   /pgs/{id}/structure         floors/rooms/beds tree (for bed counts)
+ *   POST  /pgs (+floors/rooms/beds)   create a PG and its structure
+ *   PATCH /pgs/{id}                   update a PG (e.g. activate/deactivate)
+ *   GET   /dashboard                  occupancy + revenue stats
+ *   GET   /leads                      leads on my PGs                       (v1.1)
+ *   PATCH /leads/{id}                 advance a lead                        (v1.1)
+ *   GET   /bookings?owner=true        bookings on my PGs                    (v1.1)
+ *   PATCH /bookings/{id}/status       approve/reject/advance a booking      (v1.1)
  */
 
-import { MOCK_PGS } from './mock/pgs';
-import { request } from './api';
-import { peekBookings, peekEnquiries, updateBookingStatus } from './booking.service';
-import { makeId, getTotalBeds, getAvailableBeds } from '@/utils';
+import { http, endpoints, request } from './api';
+import { updateBookingStatus } from './booking.service';
+import {
+  buildCreatePgBody,
+  buildUpdatePgBody,
+  mapPgDetail,
+  mapEnquiry,
+  mapBooking,
+  roomTypeToApi,
+} from './mappers';
 
-const OWNED_IDS = ['pg_001', 'pg_002', 'pg_003', 'pg_004', 'pg_010'];
+// ===========================================================================
+// PROPERTIES
+// ===========================================================================
 
-function daysFromNow(days) {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  return d.toISOString();
-}
-function daysAgo(days) {
-  const d = new Date();
-  d.setDate(d.getDate() - days);
-  return d.toISOString();
-}
-
-// Deep-copy owned catalog entries and attach a seller-facing status.
-let _properties = MOCK_PGS.filter((p) => OWNED_IDS.includes(p.id)).map((p) => {
-  const copy = JSON.parse(JSON.stringify(p));
-  copy.status = copy.isActive ? (copy.isVerified ? 'ACTIVE' : 'PENDING_VERIFICATION') : 'INACTIVE';
-  return copy;
-});
-
-let _leads = [
-  { id: 'lead_1', name: 'Aarav Sharma', phone: '+91 98765 43210', pgId: 'pg_001', pgName: 'Urban Nest PG', roomType: 'DOUBLE', budget: 9000, moveInDate: daysFromNow(10), status: 'NEW', lastContacted: null, message: 'Is food included?' },
-  { id: 'lead_2', name: 'Sneha Gupta', phone: '+91 99001 23456', pgId: 'pg_001', pgName: 'Urban Nest PG', roomType: 'SINGLE', budget: 14000, moveInDate: daysFromNow(30), status: 'NEW', lastContacted: null, message: '' },
-  { id: 'lead_3', name: 'Rohit Verma', phone: '+91 98111 22233', pgId: 'pg_002', pgName: 'The Hive Co-living', roomType: 'SINGLE', budget: 16000, moveInDate: daysFromNow(5), status: 'INTERESTED', lastContacted: daysAgo(1), message: 'Can I visit this weekend?' },
-  { id: 'lead_4', name: 'Priya Nair', phone: '+91 90000 55555', pgId: 'pg_003', pgName: 'Lotus Ladies PG', roomType: 'TRIPLE', budget: 7500, moveInDate: daysFromNow(20), status: 'CONTACTED', lastContacted: daysAgo(2), message: '' },
-  { id: 'lead_5', name: 'Karan Mehta', phone: '+91 98222 44455', pgId: 'pg_004', pgName: 'Skyline Boys Hostel', roomType: 'FOUR_SHARING', budget: 5500, moveInDate: daysFromNow(15), status: 'CONVERTED', lastContacted: daysAgo(4), message: '' },
-  { id: 'lead_6', name: 'Ananya Rao', phone: '+91 97777 88899', pgId: 'pg_010', pgName: 'Powai Lakeview PG', roomType: 'DOUBLE', budget: 15000, moveInDate: daysFromNow(7), status: 'CLOSED', lastContacted: daysAgo(6), message: 'Found another place.' },
-];
-
-let _bookings = [
-  { id: 'sbk_1', name: 'Rohit Verma', phone: '+91 98111 22233', pgId: 'pg_002', pgName: 'The Hive Co-living', roomType: 'SINGLE', moveInDate: daysFromNow(5), amount: 16500 + 33000, status: 'PENDING', paymentStatus: 'UNPAID', createdAt: daysAgo(0) },
-  { id: 'sbk_2', name: 'Sneha Gupta', phone: '+91 99001 23456', pgId: 'pg_001', pgName: 'Urban Nest PG', roomType: 'DOUBLE', moveInDate: daysFromNow(30), amount: 8500 + 17000, status: 'APPROVED', paymentStatus: 'UNPAID', createdAt: daysAgo(1) },
-  { id: 'sbk_3', name: 'Meera Iyer', phone: '+91 96543 21098', pgId: 'pg_003', pgName: 'Lotus Ladies PG', roomType: 'TRIPLE', moveInDate: daysFromNow(12), amount: 7500 + 15000, status: 'PAYMENT_PENDING', paymentStatus: 'UNPAID', createdAt: daysAgo(2) },
-  { id: 'sbk_4', name: 'Karan Mehta', phone: '+91 98222 44455', pgId: 'pg_004', pgName: 'Skyline Boys Hostel', roomType: 'FOUR_SHARING', moveInDate: daysFromNow(15), amount: 5500 + 11000, status: 'CONFIRMED', paymentStatus: 'PAID', createdAt: daysAgo(5) },
-];
-
-// Status overrides for leads derived from consumer enquiries (which live in the
-// booking service). Keyed by enquiry id.
-const _leadOverrides = {};
-
-// Consumer enquiries → lead shape, merged newest-first ahead of the seeded leads.
-function buildLeads() {
-  const fromEnquiries = peekEnquiries().map((e) => ({
-    id: e.id,
-    name: e.name || 'Prospect',
-    phone: e.phone || '',
-    pgId: e.pgId,
-    pgName: e.pgName,
-    roomType: e.roomType,
-    budget: e.budget,
-    moveInDate: e.moveInDate,
-    message: e.message || '',
-    status: _leadOverrides[e.id]?.status || 'NEW',
-    lastContacted: _leadOverrides[e.id]?.lastContacted || null,
-  }));
-  return [...fromEnquiries, ..._leads];
-}
-
-// Consumer bookings + seeded seller bookings, newest-first.
-function buildBookings() {
-  const fromConsumer = peekBookings().map((b) => ({ ...b, name: b.name || 'Tenant', phone: b.phone || '' }));
-  return [...fromConsumer, ..._bookings];
-}
-
-// --- Properties ------------------------------------------------------------
-// Non-delayed accessor so the consumer catalog (pg.service) can resolve owner-created
-// listings for preview without another round-trip.
-export function peekSellerProperties() {
-  return _properties;
+/** Fetch a PG's structure and map it to the UI detail shape (with real bed counts). */
+async function fetchPropertyDetail(pgId) {
+  const data = await http.get(endpoints.pgStructure(pgId));
+  return mapPgDetail(data.pg || data, { floors: data.floors });
 }
 
 export async function getSellerProperties() {
-  return request(_properties);
+  const list = await http.get(endpoints.pgs);
+  const detailed = await Promise.allSettled((list || []).map((pg) => fetchPropertyDetail(pg.id)));
+  return detailed.filter((r) => r.status === 'fulfilled').map((r) => r.value);
 }
 
 export async function getSellerPropertyById(id) {
-  const p = _properties.find((x) => x.id === id);
-  if (!p) {
-    const err = new Error('Property not found');
-    err.code = 'NOT_FOUND';
-    throw err;
+  try {
+    return await fetchPropertyDetail(id);
+  } catch (e) {
+    if (e?.status === 404) {
+      const err = new Error('Property not found');
+      err.code = 'NOT_FOUND';
+      throw err;
+    }
+    throw e;
   }
-  return request(p);
 }
 
+/**
+ * Create a PG and its structure. POST /pgs, then one floor, then a room per wizard room,
+ * then `totalBeds` beds per room (new beds start AVAILABLE). A PG is created VERIFIED &
+ * active by default in v1.1.
+ */
 export async function addProperty(data) {
-  const property = {
-    id: makeId('pg'),
-    sellerId: 'me',
-    rating: 0,
-    reviewCount: 0,
-    isVerified: false,
-    isActive: false,
-    status: 'PENDING_VERIFICATION',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    ...data,
-  };
-  _properties = [property, ..._properties];
-  return request(property, { latency: 700 });
-}
+  const created = await http.post(endpoints.pgs, buildCreatePgBody(data));
+  const pgId = created.id;
 
-export async function setPropertyActive(id, active) {
-  const p = _properties.find((x) => x.id === id);
-  if (p) {
-    p.isActive = active;
-    p.status = active ? 'ACTIVE' : 'INACTIVE';
+  const rooms = data.rooms || [];
+  if (rooms.length) {
+    const floor = await http.post(endpoints.floors(pgId), { name: 'Floor 1' });
+    for (const room of rooms) {
+      const createdRoom = await http.post(endpoints.rooms(pgId), {
+        floor_id: floor.id,
+        room_number: room.floor ? `${room.floor}` : `${room.roomType}`,
+        room_type: roomTypeToApi(room.roomType),
+        is_ac: !!(room.amenities || []).includes('ac'),
+        rent: Number(room.monthlyRent) || 0,
+      });
+      const bedCount = Number(room.totalBeds) || 0;
+      for (let i = 0; i < bedCount; i += 1) {
+        await http.post(endpoints.beds(pgId), {
+          room_id: createdRoom.id,
+          bed_number: String.fromCharCode(65 + (i % 26)) + (i >= 26 ? Math.floor(i / 26) : ''),
+          rent: Number(room.monthlyRent) || 0,
+        });
+      }
+    }
   }
-  return request(p);
+  return fetchPropertyDetail(pgId);
 }
 
+/** Show/hide a listing — PATCH /pgs/{id} { is_active } (v1.1). */
+export async function setPropertyActive(id, active) {
+  const updated = await http.patch(endpoints.pg(id), buildUpdatePgBody({ isActive: active }));
+  return mapPgDetail(updated);
+}
+
+/**
+ * NO BACKEND ENDPOINT. Bed availability is driven by tenant add/leave/move, not a direct
+ * "set available beds" call. Kept as a resolved no-op. (UNSUPPORTED_ENDPOINTS.md)
+ */
 export async function updateRoomAvailability(propId, roomId, availableBeds) {
-  const p = _properties.find((x) => x.id === propId);
-  const room = p?.rooms.find((r) => r.id === roomId);
-  if (room) room.availableBeds = Math.max(0, Math.min(room.totalBeds, availableBeds));
-  return request(p);
+  return request({ propId, roomId, availableBeds }, { latency: 150 });
 }
 
-// --- Leads -----------------------------------------------------------------
+// ===========================================================================
+// DASHBOARD STATS
+// ===========================================================================
+export async function getSellerStats() {
+  const [dash, leads, bookings] = await Promise.allSettled([
+    http.get(endpoints.dashboard),
+    http.get(endpoints.leads),
+    http.get(endpoints.bookings, { query: { owner: true } }),
+  ]);
+  const d = dash.status === 'fulfilled' ? dash.value || {} : {};
+  const leadList = leads.status === 'fulfilled' ? leads.value || [] : [];
+  const bookingList = bookings.status === 'fulfilled' ? bookings.value || [] : [];
+
+  return {
+    totalProperties: d.total_pgs ?? 0,
+    activeProperties: d.total_pgs ?? 0,
+    totalBeds: d.total_beds ?? 0,
+    occupiedBeds: d.occupied_beds ?? 0,
+    availableBeds: d.available_beds ?? 0,
+    monthlyRevenue: d.collected_revenue ?? 0,
+    pendingEnquiries: leadList.filter((l) => l.status === 'NEW').length,
+    pendingBookings: bookingList.filter((b) => b.status === 'PENDING').length,
+  };
+}
+
+// ===========================================================================
+// LEADS (v1.1)
+// ===========================================================================
 export async function getLeads() {
-  return request(buildLeads());
+  const list = await http.get(endpoints.leads);
+  return (list || []).map(mapEnquiry);
 }
 
 export async function updateLeadStatus(id, status) {
-  const now = new Date().toISOString();
-  const seeded = _leads.find((l) => l.id === id);
-  if (seeded) {
-    seeded.status = status;
-    seeded.lastContacted = now;
-  } else {
-    // lead came from a consumer enquiry — keep the override so it survives refetch
-    _leadOverrides[id] = { status, lastContacted: now };
-  }
-  return request({ id, status, lastContacted: now });
+  return mapEnquiry(await http.patch(endpoints.lead(id), { status }));
 }
 
-// --- Bookings --------------------------------------------------------------
+// ===========================================================================
+// BOOKINGS (v1.1)
+// ===========================================================================
 export async function getSellerBookings() {
-  return request(buildBookings());
+  const list = await http.get(endpoints.bookings, { query: { owner: true } });
+  return (list || []).map(mapBooking);
 }
 
-export async function updateSellerBookingStatus(id, status) {
-  const seeded = _bookings.find((x) => x.id === id);
-  if (seeded) {
-    seeded.status = status;
-    return request(seeded);
-  }
-  // consumer-created booking — update it in the booking service so the tenant sees it
-  return updateBookingStatus(id, status);
-}
-
-// --- Dashboard stats -------------------------------------------------------
-export async function getSellerStats() {
-  const active = _properties.filter((p) => p.status === 'ACTIVE');
-  const totalBeds = _properties.reduce((s, p) => s + getTotalBeds(p), 0);
-  const availableBeds = _properties.reduce((s, p) => s + getAvailableBeds(p), 0);
-  const occupiedBeds = totalBeds - availableBeds;
-  // Revenue = occupied beds × their room rent, summed across properties.
-  const monthlyRevenue = _properties.reduce(
-    (sum, p) => sum + p.rooms.reduce((rs, r) => rs + (r.totalBeds - r.availableBeds) * r.monthlyRent, 0),
-    0
-  );
-  return request({
-    totalProperties: _properties.length,
-    activeProperties: active.length,
-    totalBeds,
-    occupiedBeds,
-    availableBeds,
-    pendingEnquiries: buildLeads().filter((l) => l.status === 'NEW').length,
-    pendingBookings: buildBookings().filter((b) => b.status === 'PENDING').length,
-    monthlyRevenue,
-  });
+/** Approve/reject/advance a booking; optional payment_status flag. */
+export async function updateSellerBookingStatus(id, status, paymentStatus) {
+  return updateBookingStatus(id, status, paymentStatus);
 }

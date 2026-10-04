@@ -46,9 +46,9 @@ export default function RoleSelection() {
 
   const choose = (role) => {
     setRole(role);
-    // Consumers browse freely — no login. Sellers sign in to manage listings.
-    if (role === 'consumer') router.replace('/(consumer)/home');
-    else router.push('/(auth)/login');
+    // Both roles sign in with OTP — a USER token is needed for favourites, reviews,
+    // enquiries and bookings.
+    router.push('/(auth)/login');
   };
 
   return (
@@ -83,7 +83,7 @@ export default function RoleSelection() {
           <RoleCard
             icon="magnify"
             title="Find a PG"
-            subtitle="Browse PGs freely — no sign-up needed."
+            subtitle="Search, shortlist, enquire & book."
             tone="lilac"
             onPress={() => choose('consumer')}
           />

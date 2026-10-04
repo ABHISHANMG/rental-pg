@@ -59,7 +59,10 @@ export default function Home() {
           <Text style={{ fontSize: typography.caption, fontWeight: typography.semibold, color: colors.inkSoft }}>{greeting()} 👋</Text>
           <Chip label={location} icon="map-marker" onPress={() => setLocSheet(true)} tone="lemon" style={{ alignSelf: 'flex-start', marginTop: 6 }} />
         </View>
-        <IconButton icon="bell" onPress={() => router.push('/notifications')} badge={2} accessibilityLabel="Notifications" />
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm }}>
+          <IconButton icon="bell" onPress={() => router.push('/notifications')} badge={2} accessibilityLabel="Notifications" />
+          <IconButton icon="account-circle-outline" onPress={() => router.push('/personal-info')} accessibilityLabel="Account" />
+        </View>
       </View>
 
       <ScrollView

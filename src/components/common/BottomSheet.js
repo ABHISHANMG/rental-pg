@@ -7,7 +7,7 @@
  */
 
 import React from 'react';
-import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
+import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from './Icon';
 import { colors, radius as R, spacing, typography } from '@/theme';
@@ -17,7 +17,11 @@ export default function BottomSheet({ visible, onClose, title, children, footer,
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose} statusBarTranslucent>
-      <View style={{ flex: 1, justifyContent: 'flex-end' }}>
+      {/* Lift the sheet above the keyboard so inputs + the sticky footer stay visible. */}
+      <KeyboardAvoidingView
+        style={{ flex: 1, justifyContent: 'flex-end' }}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
         <Pressable style={{ flex: 1, backgroundColor: colors.overlay }} onPress={onClose} accessibilityLabel="Close sheet" />
         <View
           style={{
@@ -56,6 +60,7 @@ export default function BottomSheet({ visible, onClose, title, children, footer,
           <ScrollView
             contentContainerStyle={{ paddingHorizontal: spacing.xl, paddingBottom: spacing.lg }}
             showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
           >
             {children}
           </ScrollView>
@@ -75,7 +80,7 @@ export default function BottomSheet({ visible, onClose, title, children, footer,
             </View>
           ) : null}
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }

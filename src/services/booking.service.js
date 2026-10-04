@@ -1,69 +1,57 @@
 /**
- * Enquiry + booking service (mock, in-memory).
- * Mirrors: POST /enquiries, GET /enquiries, POST /bookings, GET /bookings, GET /bookings/:id
+ * Enquiry + booking funnel (v1.1 addendum).
+ *   POST /enquiries            raise an enquiry (consumer)        -> enquiry
+ *   GET  /enquiries            my enquiries (consumer)            -> [enquiry]
+ *   POST /bookings             request a booking (consumer)       -> booking
+ *   GET  /bookings             my bookings (consumer)             -> [booking]
+ *   GET  /bookings/{id}        one booking (consumer or owner)    -> booking
+ *   PATCH /bookings/{id}/status approve/reject/advance (owner)    -> booking
  *
- * State lives in module-level arrays for the mock milestone. A real implementation
- * swaps these for network calls while keeping identical signatures.
+ * Owner-side lead/booking listing lives in seller.service.
  */
 
-import { request } from './api';
-import { makeId } from '@/utils';
+import { http, endpoints } from './api';
+import { mapEnquiry, buildEnquiryBody, mapBooking, buildBookingBody } from './mappers';
 
-const _enquiries = [];
-const _bookings = [];
-
-// Non-delayed accessors so the seller service can merge consumer-created records into
-// its leads/bookings without triggering another simulated round-trip.
-export function peekEnquiries() {
-  return _enquiries;
-}
-export function peekBookings() {
-  return _bookings;
-}
-
+// --- Enquiries -------------------------------------------------------------
 export async function createEnquiry(data) {
-  const enquiry = {
-    id: makeId('enq'),
-    status: 'NEW',
-    createdAt: new Date().toISOString(),
-    ...data,
-  };
-  _enquiries.unshift(enquiry);
-  return request(enquiry, { latency: 500 });
+  const e = await http.post(endpoints.enquiries, buildEnquiryBody(data));
+  return mapEnquiry(e);
 }
 
 export async function getEnquiries() {
-  return request(_enquiries);
+  const list = await http.get(endpoints.enquiries);
+  return (list || []).map(mapEnquiry);
 }
 
+// --- Bookings --------------------------------------------------------------
 export async function createBooking(data) {
-  const booking = {
-    id: makeId('bkg'),
-    status: 'PENDING',
-    paymentStatus: 'UNPAID',
-    createdAt: new Date().toISOString(),
-    ...data,
-  };
-  _bookings.unshift(booking);
-  return request(booking, { latency: 600 });
+  const b = await http.post(endpoints.bookings, buildBookingBody(data));
+  return mapBooking(b);
 }
 
+/** Consumer's own bookings (owner=false). */
 export async function getBookings() {
-  return request(_bookings);
+  const list = await http.get(endpoints.bookings, { query: { owner: false } });
+  return (list || []).map(mapBooking);
 }
 
 export async function getBookingById(id) {
-  const booking = _bookings.find((b) => b.id === id);
-  if (!booking) {
-    const err = new Error('Booking not found');
-    err.code = 'NOT_FOUND';
-    throw err;
+  try {
+    return mapBooking(await http.get(endpoints.booking(id)));
+  } catch (e) {
+    if (e?.status === 404) {
+      const err = new Error('Booking not found');
+      err.code = 'NOT_FOUND';
+      throw err;
+    }
+    throw e;
   }
-  return request(booking);
 }
 
-export async function updateBookingStatus(id, status) {
-  const booking = _bookings.find((b) => b.id === id);
-  if (booking) booking.status = status;
-  return request(booking);
+/** Advance a booking's status (owner only). `payment_status` optional. */
+export async function updateBookingStatus(id, status, paymentStatus) {
+  const body = { status };
+  if (paymentStatus != null) body.payment_status = paymentStatus;
+  return mapBooking(await http.patch(endpoints.bookingStatus(id), body));
 }

@@ -207,6 +207,16 @@ export default function AddPG() {
         confirmLabel: 'Done',
         onConfirm: () => router.replace('/(seller)/listings'),
       });
+    } catch (e) {
+      const isAuth = e?.status === 401 || e?.status === 403;
+      dialog.alert({
+        title: isAuth ? 'Owner account required' : 'Could not submit',
+        message: isAuth
+          ? 'Listing a PG needs a PG owner login. Log out and sign in with an owner account (choose “List my PG”).'
+          : e?.detail || e?.message || 'Something went wrong. Please try again.',
+        icon: 'alert-circle-outline',
+        tone: 'danger',
+      });
     } finally {
       setSubmitting(false);
     }
